@@ -8,6 +8,9 @@ import java.util.List;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.CachePut;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -18,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 
 @RestController
@@ -35,6 +39,7 @@ public class WebController {
         repository.deleteAll();
         return "Done";
     }
+
 
     @RequestMapping(method = RequestMethod.DELETE, value="/api/v1/url/{shortURL}")
     public ResponseEntity<UrlMap> deleteURL(@RequestHeader(value="Authorization") String auth, @PathVariable String shortURL) {
@@ -54,8 +59,7 @@ public class WebController {
                 // User is different
                 return new ResponseEntity<>(HttpStatus.FORBIDDEN);
             }
-            String id = repository.findBysURL(map.getsURL()).get(0).getId();
-            repository.deleteById(id);
+            deleteUrl(map, shortURL);
             return new ResponseEntity<>(HttpStatus.OK);
 
         } catch (Exception e) {
@@ -65,34 +69,47 @@ public class WebController {
         }
     }
 
+    @Cacheable(value = "url-single", key = "#shortURL")
+    public void deleteUrl(UrlMap map, String shortURL) {
+        String id = repository.findBysURL(map.getsURL()).get(0).getId();
+        repository.deleteById(id);
+    }
+
     @RequestMapping(method = RequestMethod.GET, value = "/api/v1/url/{shorturl}")
     public ResponseEntity<String> expandUrl(@PathVariable String shorturl){
-        if(repository.findBysURL(shorturl).isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-        }
-
+        String url = getLongUrl(shorturl);
         HttpHeaders header = new HttpHeaders();
-        header.add("Location", repository.findBysURL(shorturl).get(0).getoURL());
+        header.add("Location", url);
         return new ResponseEntity<>(header, HttpStatus.PERMANENT_REDIRECT);
     }
 
+    @Cacheable(value = "url-single", key = "#shorturl")
+    public String getLongUrl(String shorturl){
+        if(repository.findBysURL(shorturl).isEmpty()) {
+            return null;
+        }
 
+       return repository.findBysURL(shorturl).get(0).getoURL();
+    }
+
+
+    @CachePut(value = "url-single", key = "#shortURL")
     @RequestMapping(method = RequestMethod.PUT, value="/api/v1/url/shorten/{shortURL}")
-    public ResponseEntity<UrlMap> putURL (@RequestHeader(value="Authorization") String auth, @RequestBody UrlMap input, @PathVariable String shortURL){
+    public UrlMap putURL (@RequestHeader(value="Authorization") String auth, @RequestBody UrlMap input, @PathVariable String shortURL){
         if (auth.equals(null) || auth.isEmpty() == true) {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
 
         String user = JwksClient.getInstance(jwksconfig.getUrls()).getID(auth);
         if (user == null || user.isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
         try {
             String oURL = input.getoURL();
             String sURL = shortURL;
 
             if (input.getoURL() == null) {
-                return new ResponseEntity<>(HttpStatus.EXPECTATION_FAILED);
+                throw new ResponseStatusException(HttpStatus.EXPECTATION_FAILED);
             }
 
             // Find object by short URL
@@ -112,34 +129,35 @@ public class WebController {
                         UrlMap putUrlMap = new UrlMap(id, oURL, sURL, user);
                         repository.save(putUrlMap);
 
-                        return new ResponseEntity<>(putUrlMap, HttpStatus.ACCEPTED); //202
+                        return putUrlMap; //202
                     } else {
                         // User is different
-                        return new ResponseEntity<>(HttpStatus.FORBIDDEN);
+                        throw new ResponseStatusException(HttpStatus.FORBIDDEN);
                     }
                 }
             }
 
             // Object is not found
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         } catch(Exception e) {
-            return new ResponseEntity<>(HttpStatus.EXPECTATION_FAILED);
+            throw new ResponseStatusException(HttpStatus.EXPECTATION_FAILED);
         }
     }
 
+    @Cacheable(value = "url-single", keyGenerator = "keygen")
     @RequestMapping(method = RequestMethod.POST, value = "/api/v1/url/shorten")
-    public ResponseEntity<UrlMap> shortenURL(@RequestHeader(value="Authorization") String auth, @RequestBody UrlMap input) {
+    public UrlMap shortenURL(@RequestHeader(value="Authorization") String auth, @RequestBody UrlMap input) {
         if (input.getoURL() == null || input.getoURL().equals("")) {
-            return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
         }
 
         if (auth.equals(null) || auth.isEmpty() == true) {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
 
         String user = JwksClient.getInstance(jwksconfig.getUrls()).getID(auth);
         if (user == null || user.isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
 
         try {
@@ -150,37 +168,33 @@ public class WebController {
             UUID uuid = UUID.randomUUID();
             String id = uuid.toString();
             String sURL = getHash(oURL);
-            if (!repository.findBysURL(sURL).isEmpty()) {
-                sURL = getHash(oURL + id);
-            }
 
             UrlMap entry = new UrlMap(id, oURL, sURL, user);
             repository.save(entry);
-            return new ResponseEntity<>(entry, HttpStatus.ACCEPTED);
+            return entry;
         } catch (Exception e) {
             e.printStackTrace();
-            return new ResponseEntity<>(HttpStatus.EXPECTATION_FAILED);
+            throw new ResponseStatusException(HttpStatus.EXPECTATION_FAILED);
         }
     }
 
     @RequestMapping("/api/v1/urls")
-    public ResponseEntity<List<UrlMap>> getUrls(@RequestHeader(value="Authorization") String auth) {
+    public List<UrlMap> getUrls(@RequestHeader(value="Authorization") String auth) {
         if (auth.equals(null) || auth.isEmpty() == true) {
-            return new ResponseEntity<>( HttpStatus.UNAUTHORIZED);
+            throw new ResponseStatusException( HttpStatus.UNAUTHORIZED);
         }
 
         String user = JwksClient.getInstance(jwksconfig.getUrls()).getID(auth);
         if (user == null || user.isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
 
         List<UrlMap> response = repository.findByuser(user);
         if (response.isEmpty() == true || response.size() == 0) {
-            System.out.println("User is not FOUND");
-            return new ResponseEntity<>(Collections.EMPTY_LIST, HttpStatus.NOT_FOUND);
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
 
-        return new ResponseEntity<>(response, HttpStatus.OK);
+        return response;
     }
 
 

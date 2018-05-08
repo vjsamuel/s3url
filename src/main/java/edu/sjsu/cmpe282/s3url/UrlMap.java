@@ -4,8 +4,10 @@ import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBAttribute;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBHashKey;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBTable;
 
+import java.io.Serializable;
+
 @DynamoDBTable(tableName = "UrlMap")
-public class UrlMap {
+public class UrlMap implements Serializable {
 
     private String id;
     private String oURL;
